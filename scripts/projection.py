@@ -1,4 +1,5 @@
 #!/home/hviktortsoi/miniconda3/bin/python
+# coding=utf-8
 import multiprocessing
 import os
 import time
@@ -14,6 +15,7 @@ from PIL import Image
 import upsample_ext
 
 MAX_DEPTH = 60
+NUM_THREADS = 80
 
 
 def interp(pc, img_size):
@@ -153,7 +155,7 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
     print(pc.shape)
 
     # 上采样点云
-    pc = upsample_ext.upsample(pc)
+    pc = upsample_ext.upsample(pc, num_threads=NUM_THREADS)
     # pc = pc[np.where(pc[:, -1] == 128)]
 
     # 备份其他特征
@@ -184,8 +186,9 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         # 方法2 下边是不对投影之后的点云做任何处理，直接以点的形式绘制到前视图上
         img = np.zeros([375, 1242, 3])
         # BGR
-        img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 2] = (np.maximum(0, MAX_DEPTH - pc[:, 2]) / MAX_DEPTH) ** 1.1  # depth
+        img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (np.maximum(0, MAX_DEPTH - pc[:, 2]) / MAX_DEPTH) ** 1.1  # depth
         # img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (pc[:, 3] + 0.1)  # intensity
+        img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 2] = (pc[:, 5] + 126) % 255 / 255  # intensity
         img = np.int_(img * 255)
     elif method == 'interp':
         # 方法3 interp
@@ -205,27 +208,49 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
     return img
 
 
+def get_object_file_list():
+    object_origin_dataroot = '/home/bdbc201/dataset/KITTI/object/training/{}/'
+    file_list = []
+    for pc_file in os.listdir(object_origin_dataroot.format('velodyne')):
+        file_list.append((
+            os.path.join(object_origin_dataroot.format('calib'), pc_file[:-4] + '.txt'),
+            os.path.join(object_origin_dataroot.format('velodyne'), pc_file),
+            os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png'),
+        ))
+    return file_list
+
+
 if __name__ == '__main__':
+    file_list = get_object_file_list()
+    print(file_list)
     # object
     yaw_deg = 0
-    object_origin_dataroot = '/home/hviktortsoi/data/KITTI/{}/'
-    pc_file = '0000/000150.bin'
+    # object_origin_dataroot = '/home/hviktortsoi/data/KITTI/{}/'
+    # pc_file = '0000/000000.bin'
+    object_origin_dataroot = '/home/bdbc201/dataset/KITTI/object/training/{}/'
+    pc_file = '000000.bin'
     # 读取标定文件
-    calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[5:-6] + '.txt')
+    # calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[5:-6] + '.txt')
+    calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[:-4] + '.txt')
     # calib_file = load_calib(calib_file_path)
     # 读取lidar
     bin_file_path = os.path.join(object_origin_dataroot.format('velodyne'), pc_file)
     # 读取图像尺寸
-    origin = cv2.imread(os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png'))
+    img_path = os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png')
+    origin = cv2.imread(img_path)
     img_size = origin.T.shape[1:]
-    # img_size = Image.open(os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png')).size
     print(bin_file_path, img_size)
     # 投影
     pc = load_pc(bin_file_path)
+
+    tic = time.time()
     img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='zbuffer')
+    toc = time.time()
+    print('time used: {}s'.format(toc - tic))
+    # img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='points')
     # 裁剪到仅有lidar的部分
     img = img[120:, ...]
 
-    cv2.imshow('', img.astype(np.uint8))
-    cv2.waitKey(0)
+    # cv2.imshow('', img.astype(np.uint8))
+    # cv2.waitKey(0)
     cv2.imwrite('/tmp/{}.png'.format(time.time()), img)
