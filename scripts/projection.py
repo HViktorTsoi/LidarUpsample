@@ -220,7 +220,7 @@ def get_object_file_list(root):
     return file_list
 
 
-def process(calib_file_path, bin_file_path, img_path, file_id):
+def process_task(calib_file_path, bin_file_path, img_path, file_id):
     # 载入图像 点云
     origin = cv2.imread(img_path)
     img_size = origin.T.shape[1:]
@@ -252,6 +252,10 @@ if __name__ == '__main__':
     # object
     yaw_deg = 0
 
-    for file in file_list:
+    pool = multiprocessing.Pool(32)
+    for file in sorted(file_list):
         calib_file_path, bin_file_path, img_path, file_id = file
-        process(calib_file_path, bin_file_path, img_path, file_id)
+        pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id,))
+        # process_task(calib_file_path, bin_file_path, img_path, file_id)
+    pool.close()
+    pool.join()
