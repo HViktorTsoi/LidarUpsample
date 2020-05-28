@@ -2,23 +2,22 @@ cmake_minimum_required(VERSION 3.13)
 project(pointcloud_upsample)
 
 set(CMAKE_CXX_STANDARD 14)
-#
-## python and pybind11
-#set(PYTHON_INCLUDE_DIRS "/home/hviktortsoi/miniconda3/include/;/home/hviktortsoi/miniconda3/include/python3.7m")
-#set(PYTHON_LIBARIES "/home/hviktortsoi/miniconda3/lib/")
-#
-#message("PYTHON INCLUDE DIRS: " ${PYTHON_INCLUDE_DIRS})
-#message("PYTHON LIBRARY: " ${PYTHON_LIBARIES})
-#
-#set(CMAKE_PREFIX_PATH "/home/hviktortsoi/miniconda3/")
 
-#add_subdirectory(/home/hviktortsoi/miniconda3/include/python3.7m/pybind11)
 
-# pybind
-set(pybind11_DIR "/home/hviktortsoi/miniconda3/share/cmake/pybind11")
-#include_directories(${PYTHON_INCLUDE_DIRS})
-find_package(pybind11 REQUIRED)
-include_directories(${pybind11_INCLUDE_DIRS})
+# python and pybind11
+set(PYTHON_INCLUDE_DIRS "${PYTHON_ROOT}/include/;${PYTHON_ROOT}/include/python${PYTHON_VERSION}m")
+set(PYTHON_LIBARIES "${PYTHON_ROOT}/lib/")
+
+message("PYTHON INCLUDE DIRS: " ${PYTHON_INCLUDE_DIRS})
+message("PYTHON LIBRARY: " ${PYTHON_LIBARIES})
+include_directories(${PYTHON_INCLUDE_DIRS})
+
+## pybind
+#set(pybind11_DIR "/home/hviktortsoi/miniconda3/share/cmake/pybind11")
+##set(pybind11_DIR "${PYTHON_ROOT}/share/cmake/pybind11")
+##message("Pybind11 find path:" ${pybind11_DIR})
+#find_package(pybind11 REQUIRED)
+#include_directories(${pybind11_INCLUDE_DIRS})
 
 # pcl
 #set(PCL_DIR "/media/hviktortsoi/302F52149E388942/BaiduNetdiskDownload/pcl-1.8.1/share/pcl-1.8")
@@ -43,5 +42,5 @@ target_link_libraries(pointcloud_upsample ${PCL_LIBRARIES})
 
 add_library(upsample_ext SHARED upsample.cpp upsample.hpp)
 set_target_properties(upsample_ext PROPERTIES PREFIX "")
-target_link_libraries(upsample_ext pybind11::module ${PCL_LIBRARIES})
-#pybind11_add_module(upsample_ext mls_upsample.cpp)
+#target_link_libraries(upsample_ext pybind11::module ${PCL_LIBRARIES})
+target_link_libraries(upsample_ext ${PYTHON_LIBARIES} ${PCL_LIBRARIES})
