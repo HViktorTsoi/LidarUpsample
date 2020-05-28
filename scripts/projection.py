@@ -1,3 +1,4 @@
+#!/home/hviktortsoi/miniconda3/bin/python
 import multiprocessing
 import os
 import time
@@ -10,7 +11,9 @@ from scipy.interpolate import griddata
 import cv2
 from PIL import Image
 
-MAX_DEPTH = 40
+import upsample_ext
+
+MAX_DEPTH = 60
 
 
 def interp(pc, img_size):
@@ -88,21 +91,27 @@ def parse_calib_file(calib_file):
     return np.matmul(np.matmul(P2, R_rect), Tr_velo_cam)
 
 
-def zbuffer_projection(pc, img_size):
+def zbuffer_projection(pc, depth, data, img_size):
     """
     serial implement of zbuffer
     :param pc: input pointcloud
     :param img_size: image size
-    :return: depth
+    :return: rendered img
     """
-    z_buffer = np.zeros(img_size[::-1])
-    depth = (np.maximum(0, MAX_DEPTH - pc[:, 2]) / MAX_DEPTH) ** 1.1
-    plane_coord = np.int_(pc[:, :2])
-    for idx, coord in enumerate(plane_coord):
-        if depth[idx] > z_buffer[coord[1], coord[0]]:
-            z_buffer[coord[1], coord[0]] = depth[idx]
-    z_buffer *= 255
-    return z_buffer
+    z_buffer = np.zeros(img_size[::-1]) + 1e9
+    img = np.zeros(img_size[::-1] + (3,))
+    proj_coord = np.int_(pc[:, :2])
+    for point_idx, coord in enumerate(proj_coord):
+        # 深度小于当前深度时才进行投影
+        if depth[point_idx] < z_buffer[coord[1], coord[0]]:
+            # 处理深度
+            z_buffer[coord[1], coord[0]] = depth[point_idx]
+            # 处理数据
+            # img[coord[1], coord[0], 0] = (pc[point_idx, 3] + 0.1) * 255
+            img[coord[1], coord[0], 1] = (np.maximum(0, MAX_DEPTH - pc[point_idx, 2]) / MAX_DEPTH) ** 1.1 * 255
+            img[coord[1], coord[0], 2] = (pc[point_idx, 5] + 126) % 255
+
+    return img
 
 
 def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne'):
@@ -119,7 +128,6 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
 
     # 投影
     intensity = np.copy(pc[:, 3]).reshape(-1, 1)
-    height = np.copy(pc[:, 2]).reshape(-1, 1)
     pc[:, 3] = 1
     # yaw旋转
     rotate_mat = np.array([
@@ -139,23 +147,28 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         np.bitwise_and(fov_h < np.pi / 4, fov_v < np.pi / 10, )
     ))
     pc = pc[indice]
+    intensity = intensity[indice]
+    # 还原pc
+    pc = np.concatenate([pc[:, :3], intensity], axis=1)
     print(pc.shape)
 
-    # mlab.points3d(pc[:, 0], pc[:, 1], pc[:, 2], color=(1, 0, 0), mode='point')
-    # pc = pc[np.random.permutation(len(pc))[:28000], :]
-    # mlab.points3d(pc[:, 0], pc[:, 1], pc[:, 2], color=(0, 1, 0), mode='point')
-    # mlab.show()
+    # 上采样点云
+    pc = upsample_ext.upsample(pc)
+    # pc = pc[np.where(pc[:, -1] == 128)]
 
-    intensity = intensity[indice]
-    height = height[indice]
+    # 备份其他特征
+    ground = np.copy(pc[:, 4]).reshape(-1, 1)
+    intensity = np.copy(pc[:, 3]).reshape(-1, 1)
+    height = np.copy(pc[:, 2]).reshape(-1, 1)
     # 进行投影变换
+    pc = np.concatenate([pc[:, :3], np.ones_like(pc[:, 0]).reshape(-1, 1)], axis=1)
     pc = np.matmul(calib_mat, pc.T).T
 
     # z深度归一化
     pc[:, :2] /= pc[:, 2:]
 
     # 还原intensity
-    pc = np.concatenate([pc, intensity, height], axis=1)
+    pc = np.concatenate([pc, intensity, height, ground], axis=1)
 
     # 按照原图大小裁剪
     pc = pc[np.where(pc[:, 0] >= 0)]
@@ -167,7 +180,7 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         # 方法1 对点云做color map之后再绘制到前视图上
         # img = color_map(pc, img_size)
         pass
-    elif method == 'velodyne':
+    elif method == 'points':
         # 方法2 下边是不对投影之后的点云做任何处理，直接以点的形式绘制到前视图上
         img = np.zeros([375, 1242, 3])
         # BGR
@@ -179,8 +192,13 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         img = interp(pc, img_size)
     elif method == 'zbuffer':
         # 方法4 point-zbuffer投影
-        img = np.zeros([img_size[1], img_size[0], 3])
-        img[:, :, 2] = zbuffer_projection(pc, img_size)
+        img = zbuffer_projection(
+            pc,
+            depth=pc[:, 2],
+            data=pc[:, 2:],
+            img_size=img_size
+        )
+        # img[:, :, 2] = zbuffer_projection(pc, img_size)
     else:
         img = None
 
@@ -191,12 +209,12 @@ if __name__ == '__main__':
     # object
     yaw_deg = 0
     object_origin_dataroot = '/home/hviktortsoi/data/KITTI/{}/'
-    pc_file = '0000/000100.bin'
+    pc_file = '0000/000150.bin'
     # 读取标定文件
     calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[5:-6] + '.txt')
     # calib_file = load_calib(calib_file_path)
     # 读取lidar
-    bin_file_path = os.path.join(object_origin_dataroot.format('interp'), pc_file)
+    bin_file_path = os.path.join(object_origin_dataroot.format('velodyne'), pc_file)
     # 读取图像尺寸
     origin = cv2.imread(os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png'))
     img_size = origin.T.shape[1:]
