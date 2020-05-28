@@ -15,7 +15,7 @@ from PIL import Image
 import upsample_ext
 
 MAX_DEPTH = 60
-NUM_THREADS = 80
+NUM_THREADS = 72
 
 
 def interp(pc, img_size):
@@ -152,7 +152,6 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
     intensity = intensity[indice]
     # 还原pc
     pc = np.concatenate([pc[:, :3], intensity], axis=1)
-    print(pc.shape)
 
     # 上采样点云
     pc = upsample_ext.upsample(pc, num_threads=NUM_THREADS)
@@ -184,7 +183,7 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         pass
     elif method == 'points':
         # 方法2 下边是不对投影之后的点云做任何处理，直接以点的形式绘制到前视图上
-        img = np.zeros([375, 1242, 3])
+        img = np.zeros(img_size[::-1] + (3,))
         # BGR
         img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (np.maximum(0, MAX_DEPTH - pc[:, 2]) / MAX_DEPTH) ** 1.1  # depth
         # img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (pc[:, 3] + 0.1)  # intensity
@@ -208,49 +207,51 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
     return img
 
 
-def get_object_file_list():
-    object_origin_dataroot = '/home/bdbc201/dataset/KITTI/object/training/{}/'
+def get_object_file_list(root):
+    object_origin_dataroot = root
     file_list = []
     for pc_file in os.listdir(object_origin_dataroot.format('velodyne')):
         file_list.append((
             os.path.join(object_origin_dataroot.format('calib'), pc_file[:-4] + '.txt'),
             os.path.join(object_origin_dataroot.format('velodyne'), pc_file),
             os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png'),
+            pc_file[:-4]
         ))
     return file_list
 
 
-if __name__ == '__main__':
-    file_list = get_object_file_list()
-    print(file_list)
-    # object
-    yaw_deg = 0
-    # object_origin_dataroot = '/home/hviktortsoi/data/KITTI/{}/'
-    # pc_file = '0000/000000.bin'
-    object_origin_dataroot = '/home/bdbc201/dataset/KITTI/object/training/{}/'
-    pc_file = '000000.bin'
-    # 读取标定文件
-    # calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[5:-6] + '.txt')
-    calib_file_path = os.path.join(object_origin_dataroot.format('calib'), pc_file[:-4] + '.txt')
-    # calib_file = load_calib(calib_file_path)
-    # 读取lidar
-    bin_file_path = os.path.join(object_origin_dataroot.format('velodyne'), pc_file)
-    # 读取图像尺寸
-    img_path = os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png')
+def process(calib_file_path, bin_file_path, img_path, file_id):
+    # 载入图像 点云
     origin = cv2.imread(img_path)
     img_size = origin.T.shape[1:]
-    print(bin_file_path, img_size)
-    # 投影
     pc = load_pc(bin_file_path)
 
+    # 投影
     tic = time.time()
     img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='zbuffer')
     toc = time.time()
-    print('time used: {}s'.format(toc - tic))
+    print('{}: time used: {}s'.format(file_id, toc - tic))
     # img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='points')
     # 裁剪到仅有lidar的部分
     img = img[120:, ...]
 
+    # 保存结果
     # cv2.imshow('', img.astype(np.uint8))
     # cv2.waitKey(0)
-    cv2.imwrite('/tmp/{}.png'.format(time.time()), img)
+    cv2.imwrite(
+        os.path.join(OUTPUT_PATH, '{}.png'.format(file_id)),
+        img,
+        [cv2.IMWRITE_PNG_COMPRESSION, 0]  # 原图质量
+    )
+
+
+if __name__ == '__main__':
+    INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/training/{}/'
+    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls'
+    file_list = get_object_file_list(root=INPUT_PATH)
+    # object
+    yaw_deg = 0
+
+    for file in file_list:
+        calib_file_path, bin_file_path, img_path, file_id = file
+        process(calib_file_path, bin_file_path, img_path, file_id)
