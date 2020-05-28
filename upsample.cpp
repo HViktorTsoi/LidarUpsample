@@ -32,7 +32,7 @@ py::array_t<float> upsample(py::array_t<float> input, unsigned num_threads = 4) 
         cloud->points[i].z = ref_input(i, 2);
         cloud->points[i].intensity = ref_input(i, 3);
     }
-    std::cout << "INPUT SHAPE: " << ref_input.shape(0) << " " << ref_input.shape(1) << std::endl;
+//    std::cout << "INPUT SHAPE: " << ref_input.shape(0) << " " << ref_input.shape(1) << std::endl;
 
     // filter ground
     FilterGroundResult segmentation = filter_ground(cloud, 0.2);
@@ -53,7 +53,7 @@ py::array_t<float> upsample(py::array_t<float> input, unsigned num_threads = 4) 
     auto result = py::array_t<float>(py::array::ShapeContainer(
             {(const long) (cloud_upsampled->size() + ground->size()), data_field}
     ));
-    std::cout << "RESULT SHAPE: " << result.shape(0) << " " << result.shape(1) << std::endl;
+//    std::cout << "RESULT SHAPE: " << result.shape(0) << " " << result.shape(1) << std::endl;
 
 //    // 这里为了效率 直接把cloud_upsampled的data memcopy到return的buffer中
 //    // 这里的假定是每个PointXYZI由4个float32组成，且return array是n x 4大小的float32 array

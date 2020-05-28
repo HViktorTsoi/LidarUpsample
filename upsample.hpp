@@ -123,11 +123,6 @@ FilterGroundResult filter_ground(PointCloudPtr input, double distance_th) {
 
     seg.segment(*inliers, *coefficients);
 
-    for (auto &c:coefficients->values) {
-        std::cout << c << " ";
-    }
-    std::cout << std::endl;
-
     PointCloudPtr landscape(new PointCloud), ground(new PointCloud);
     // extract points
     pcl::ExtractIndices<XYZI> extract;
