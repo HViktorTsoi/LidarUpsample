@@ -112,6 +112,7 @@ def zbuffer_projection(pc, depth, data, img_size):
             # img[coord[1], coord[0], 0] = (pc[point_idx, 3] + 0.1) * 255
             img[coord[1], coord[0], 1] = (np.maximum(0, MAX_DEPTH - pc[point_idx, 2]) / MAX_DEPTH) ** 1.1 * 255
             img[coord[1], coord[0], 2] = (pc[point_idx, 5] + 126) % 255
+            # img[coord[1], coord[0], 2] = (255 - pc[point_idx, 5]) * 2
 
     return img
 
@@ -188,6 +189,7 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (np.maximum(0, MAX_DEPTH - pc[:, 2]) / MAX_DEPTH) ** 1.1  # depth
         # img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 1] = (pc[:, 3] + 0.1)  # intensity
         img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 2] = (pc[:, 5] + 126) % 255 / 255  # intensity
+        # img[np.int_(pc[:, 1]), np.int_(pc[:, 0]), 2] = (255 - pc[:, 5]) * 2 / 255  # intensity
         img = np.int_(img * 255)
     elif method == 'interp':
         # 方法3 interp
@@ -208,19 +210,44 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
 
 
 def get_object_file_list(root):
-    object_origin_dataroot = root
+    """
+    获取kitti object目录下的所有文件
+    :param root:
+    :return:
+    """
     file_list = []
-    for pc_file in os.listdir(object_origin_dataroot.format('velodyne')):
+    for pc_file in os.listdir(root.format('velodyne')):
         file_list.append((
-            os.path.join(object_origin_dataroot.format('calib'), pc_file[:-4] + '.txt'),
-            os.path.join(object_origin_dataroot.format('velodyne'), pc_file),
-            os.path.join(object_origin_dataroot.format('image_2'), pc_file[:-4] + '.png'),
+            os.path.join(root.format('calib'), pc_file[:-4] + '.txt'),
+            os.path.join(root.format('velodyne'), pc_file),
+            os.path.join(root.format('image_2'), pc_file[:-4] + '.png'),
             pc_file[:-4]
         ))
     return file_list
 
 
-def process_task(calib_file_path, bin_file_path, img_path, file_id):
+def get_tracking_file_list(root):
+    """
+    获取kitti tracking目录格式下的所有文件
+    :param root:
+    :return:
+    """
+    # 提取tracking中的所有文件
+    pc_list = ['{}/{}'.format(path, file) for path in sorted(os.listdir(root.format('velodyne')))
+               for file in sorted(os.listdir(os.path.join(root.format('velodyne'), path)))]
+
+    file_list = []
+    for pc_file in pc_list:
+        file_list.append((
+            os.path.join(root.format('calib'), pc_file[:4] + '.txt'),
+            os.path.join(root.format('velodyne'), pc_file),
+            os.path.join(root.format('image_02'), pc_file[:-4] + '.png'),
+            pc_file[:-4].replace('/', '_')  # 文件id去掉目录分割符
+        ))
+    return file_list
+
+
+def process_task(calib_file_path, bin_file_path, img_path, file_id, yaw_deg=0, method='zbuffer', visualize=False):
     # 载入图像 点云
     origin = cv2.imread(img_path)
     img_size = origin.T.shape[1:]
@@ -228,34 +255,51 @@ def process_task(calib_file_path, bin_file_path, img_path, file_id):
 
     # 投影
     tic = time.time()
-    img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='zbuffer')
+    img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method=method)
     toc = time.time()
     print('{}: time used: {}s'.format(file_id, toc - tic))
-    # img = project_lidar_to_image(pc, img_size, calib_file_path, yaw_deg=yaw_deg, method='points')
     # 裁剪到仅有lidar的部分
     img = img[120:, ...]
 
     # 保存结果
-    # cv2.imshow('', img.astype(np.uint8))
-    # cv2.waitKey(0)
-    cv2.imwrite(
-        os.path.join(OUTPUT_PATH, '{}.png'.format(file_id)),
-        img,
-        [cv2.IMWRITE_PNG_COMPRESSION, 0]  # 原图质量
-    )
+    if visualize:
+        cv2.imshow('', img.astype(np.uint8))
+        cv2.waitKey(0)
+        cv2.imwrite('/tmp/{}.png'.format(time.time()), img)
+    else:
+        # print(OUTPUT_PATH, '{}.png'.format(file_id))
+        # print(img.shape)
+        cv2.imwrite(
+            os.path.join(OUTPUT_PATH, '{}.png'.format(file_id)),
+            img,
+            [cv2.IMWRITE_PNG_COMPRESSION, 0]  # 原图质量
+        )
 
 
 if __name__ == '__main__':
-    INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/training/{}/'
-    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls'
-    file_list = get_object_file_list(root=INPUT_PATH)
+    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/training/{}/'
+    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_train'
+    # file_list = get_object_file_list(root=INPUT_PATH)
+
+    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/training/{}/'
+    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_train'
+    # file_list = get_tracking_file_list(root=INPUT_PATH)
+
+    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/testing/{}/'
+    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_test'
+    # file_list = get_object_file_list(root=INPUT_PATH)
+
+    INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/testing/{}/'
+    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_test'
+    file_list = get_tracking_file_list(root=INPUT_PATH)
+
     # object
     yaw_deg = 0
 
     pool = multiprocessing.Pool(32)
     for file in sorted(file_list):
         calib_file_path, bin_file_path, img_path, file_id = file
-        pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id,))
+        pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id, yaw_deg))
         # process_task(calib_file_path, bin_file_path, img_path, file_id)
     pool.close()
     pool.join()
