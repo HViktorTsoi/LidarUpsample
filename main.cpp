@@ -6,6 +6,7 @@
 #include <cmath>
 #include <vector>
 #include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl/filters/statistical_outlier_removal.h>
 #include <pcl/filters/conditional_removal.h>
 #include <pcl/surface/impl/mls.hpp>
@@ -16,7 +17,7 @@
 #include <pcl/features/normal_3d.h>
 #include <pcl/features/impl/normal_3d.hpp>
 #include "upsample.hpp"
-
+#include "mls_lidar.hpp"
 
 template<typename TPointType>
 typename pcl::PointCloud<TPointType>::Ptr vector_to_pointcloud(std::vector<std::vector<float >> pc) {
@@ -39,7 +40,7 @@ typename pcl::PointCloud<TPointType>::Ptr vector_to_pointcloud(std::vector<std::
  * @param fov
  * @return
  */
-PointCloudPtr crop_ROI(const PointCloudPtr &input, float fov, float forward_distance = 200) {
+PointCloudPtr crop_ROI(const PointCloudPtr &input, float fov, float forward_distance = 200, float height_limit = 8) {
 
     // filter
     pcl::PassThrough<XYZI> pass;
@@ -47,6 +48,12 @@ PointCloudPtr crop_ROI(const PointCloudPtr &input, float fov, float forward_dist
     pass.setFilterFieldName("x");
     pass.setFilterLimits(0, forward_distance);
     pass.filter(*input);
+
+    pass.setInputCloud(input);
+    pass.setFilterFieldName("z");
+    pass.setFilterLimits(-2, height_limit);
+    pass.filter(*input);
+
 
     PointCloudPtr output(new PointCloud);
     for (auto &p:*input) {
@@ -112,6 +119,18 @@ PointCloudPtr range_interpolation(PointCloudPtr input) {
     return output;
 }
 
+void spatial_visualize(const PointCloudPtr &input) {
+    // visualize
+    pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer);
+    pcl::visualization::PointCloudColorHandlerGenericField<XYZI> color(input, "x");
+    viewer->addPointCloud(input, color, "raw");
+    viewer->addCoordinateSystem(1.0);
+    viewer->initCameraParameters();
+    while (!viewer->wasStopped()) {
+        viewer->spinOnce(100);
+        boost::this_thread::sleep(boost::posix_time::microseconds(100000));
+    }
+}
 
 void mesh_visualize(const PointCloudPtr &input) {
     // segmentation
@@ -168,6 +187,41 @@ void mesh_visualize(const PointCloudPtr &input) {
 
 }
 
+PointCloudPtr test_lidar_upsample(PointCloudPtr cloud,
+                                  float radius, float step, float weight, float max_up_radius, int order = 3,
+                                  float voxel_leaf_size = 0.03) {
+    PointCloudPtr mls_points(new PointCloud), mls_points_voxel(new PointCloud);
+
+    MovingLeastSquaresLiDAR<XYZI, XYZI> mls;
+    pcl::search::KdTree<XYZI>::Ptr tree(new pcl::search::KdTree<XYZI>);
+    mls.setInputCloud(cloud);
+    mls.setPolynomialOrder(order);
+    mls.setSearchRadius(0.3);
+    mls.setSearchMethod(tree);
+
+    mls.setUpsamplingMethod(pcl::MovingLeastSquares<XYZI, XYZI>::SAMPLE_LOCAL_PLANE);
+    mls.setUpsamplingRadius(radius);
+    mls.setUpsamplingStepSize(step);
+    mls.setRadiusWeight(weight);
+    mls.setRadiusMax(max_up_radius);
+
+    mls.process(*mls_points);
+
+    std::cout << mls_points->size() << std::endl;
+
+//    // 去除噪声
+//    mls_points = noise_remove(mls_points);
+    mls_points = crop_ROI(mls_points, 3.14159 / 4, 200);
+    // voxel 平滑
+    pcl::VoxelGrid<XYZI> vg;
+    vg.setInputCloud(mls_points);
+    vg.setLeafSize(voxel_leaf_size, voxel_leaf_size, voxel_leaf_size);
+    vg.filter(*mls_points_voxel);
+
+//    visualize(mls_points);
+//    spatial_visualize(mls_points);
+    return mls_points_voxel;
+}
 
 //PointCloud fille_plane()
 
@@ -175,45 +229,40 @@ int main(int argc, char *argv[]) {
 
     // load pointcloud
     auto cloud = vector_to_pointcloud<XYZI>(load_KITTI_pointcloud(std::string(argv[1])));
-
+//    visualize(cloud);
 //    mesh_visualize(cloud);
 //    return 0;
 
     // 在限制roi之前进行分割 获取更准确的地面
     FilterGroundResult segmentation = filter_ground(cloud, 0.2);
-    auto landscape = segmentation.non_ground;
+    auto landscape = segmentation.non_ground, ground = segmentation.ground;
 
     // crop reigon
     landscape = crop_ROI(landscape, 3.14159 / 4, 200);
+    ground = crop_ROI(ground, 3.14159 / 4, 200);
     std::cout << landscape->size() << std::endl;
-
-    // reconstruct ground
-    auto ground = ground_generation(segmentation.ground, segmentation.coef, 50, 0.1);
-//    auto ground = segmentation.ground;
     std::cout << ground->size() << std::endl;
 //    visualize(landscape);
 
-    // resample landscape
-    auto landscape_upsampled = mls_upsample(landscape, 0.09, 0.03);
-//    auto landscape_upsampled = mls_upsample(landscape, 0.3, 0.1);
+    auto landscape_upsampled = test_lidar_upsample(landscape, 0.09, 0.03, 1, 1, 3, 0.02);
+//    auto ground_upsampled = test_lidar_upsample(ground, 0.4, 0.2, 2, 5,3);
+//    auto landscape_upsampled = test_lidar_upsample(landscape, 0.1, 0.03, 3, 3, 5, 0.05);
+//    auto ground_upsampled = test_lidar_upsample(ground, 0.4, 0.2, 2, 5, 3, 0.05);
+    auto ground_upsampled = ground;
 
-//    auto landscape_upsampled = range_interpolation(landscape);
-
-//    landscape = range_partition(landscape, 30, 60);
-//    auto landscape_upsampled = mls_upsample(landscape, 0.6, 0.1, 2.0);
-//    landscape = range_partition(landscape, 60, 120);
-//    auto landscape_upsampled = mls_upsample(landscape, 1.5, 0.5, 9.0);
-
-//    // resample ground
-//    auto ground_upsampled = mls_upsample(ground, 0.2, 0.05);
+//    // reconstruct ground
+//    auto ground = ground_generation(segmentation.ground, segmentation.coef, 50, 0.1);
+////    auto ground = segmentation.ground;
+//    std::cout << ground->size() << std::endl;
+////    visualize(landscape);
 
     // concat and write
-    *landscape_upsampled += *ground;
+//    *landscape_upsampled += *ground;
+//    *landscape_upsampled += *ground_upsampled;
 
-    //    viewer.showCloud(cloud);
     visualize(landscape_upsampled);
 
-    save_KITTI_pointcloud(landscape_upsampled, std::string(argv[2]));
+//    save_KITTI_pointcloud(landscape_upsampled, std::string(argv[2]));
 
     return 0;
 }
