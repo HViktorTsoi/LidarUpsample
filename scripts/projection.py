@@ -7,12 +7,16 @@ import time
 import numpy as np
 import array
 # from mpl_toolkits.mplot3d import Axes3D
-# import matplotlib.pyplot as plt
+import matplotlib
+
+matplotlib.use('TKAgg', warn=False, force=True)
+import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import cv2
 from PIL import Image
+from scipy import spatial
 
-import upsample_ext
+# import upsample_ext
 
 MAX_DEPTH = 60
 NUM_THREADS = 72
@@ -25,7 +29,7 @@ def interp(pc, img_size):
     :param img_size:
     :return:
     """
-    assert pc.shape[1] == 5, 'pointcloud must has 3 channel features:{depth, intensity, height}'
+    # assert pc.shape[1] == 5, 'pointcloud must has 3 channel features:{depth, intensity, height}'
 
     grid_x, grid_y = np.mgrid[0:img_size[0]:1, 0:img_size[1]:1]
     img_ch_depth = griddata(pc[:, 0:2], np.maximum((MAX_DEPTH - pc[:, 2]) / MAX_DEPTH, 0), (grid_x, grid_y),
@@ -93,6 +97,117 @@ def parse_calib_file(calib_file):
     return np.matmul(np.matmul(P2, R_rect), Tr_velo_cam)
 
 
+def color_map(pc, img_size):
+    """
+    将前视投影之后的点云绘制到image上
+    :param pc: 输入点云
+    :param img_size: 图像大小
+    :return:
+    """
+    # 构建mask
+    mask = np.zeros([img_size[1], img_size[0]], dtype=np.uint8)
+    mask[np.int_(pc[:, 1]), np.int_(pc[:, 0])] = 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
+    mask = cv2.dilate(mask, kernel, iterations=2)
+
+    # 泛洪算法 填补图像中的空洞
+    flood_fill = mask.copy().astype(np.uint8)
+    cv2.floodFill(flood_fill, np.zeros((img_size[1] + 2, img_size[0] + 2), np.uint8), (0, 0), 255)
+    mask = mask | cv2.bitwise_not(flood_fill)
+
+    colors = plt.get_cmap('gist_ncar_r')(np.maximum((100 - pc[:, 2]) / 100, 0))
+    # colors = plt.get_cmap('hot')(1.5 * pc[:, 3] ** 1.3)
+    grid_x, grid_y = np.mgrid[0:img_size[0]:1, 0:img_size[1]:1]
+    chs = [griddata(pc[:, 0:2], colors[:, 2 - idx], (grid_x, grid_y), method='nearest').T for idx in range(3)]
+    img = np.stack(chs, axis=-1)
+    img = np.int_(img * 255)
+
+    # 和mask向掩码
+    img = img * np.expand_dims(mask / 255, -1)
+    return img
+
+
+def ray_tracing_projection(pc, img_size):
+    # 查找多少个邻域点
+    K_search = 8
+    # 实际用多少个点插值
+    K_interp = 4
+    # 结果图像
+    img = np.zeros(img_size[::-1] + (3,))
+
+    # 生成2d rays
+    rays = np.array([[row, col] for row in range(img_size[0]) for col in range(img_size[1])])
+
+    # 构造kd tree
+    tree = spatial.cKDTree(pc[:, :2])
+
+    # 查找近邻点
+    dists, indices = tree.query(rays, k=K_search, )
+    print(dists, indices)
+
+    new_depth = []
+    for (x, y), dist, indice in zip(rays, dists, indices):
+        # 如果有太多inf 直接抛弃 不参与计算
+        if len(np.where(dist == np.inf)[0]) > 0:
+            new_depth.append(100)
+            continue
+
+        known_depth = pc[indice, 2]
+        known_intensity = pc[indice, 3]
+
+        # ind = np.argsort(known_depth)
+        # # 查看最大值和最小值之间的差距
+        # depth = abs(known_depth.mean() - known_depth[ind][:K_interp].mean()) - \
+        #         abs(known_depth[ind][K_interp:].mean() - known_depth.mean())
+        # depth = abs(known_depth[ind][:K_interp].mean() - known_depth.mean())
+        # depth = abs(known_depth[ind][-K_interp:].mean() - known_depth.mean())
+        # depth = abs(known_depth.mean())
+        # depth = np.maximum((100 - depth) / 100, 0)
+
+        # 仅使用深度最浅的几个点
+        ind = np.argpartition(known_depth, K_interp)
+        known_depth = known_depth[ind][:K_interp]
+        dist = dist[ind][:K_interp]
+        known_intensity = known_intensity[ind][:K_interp]
+
+        w = 1 / dist ** 2
+        depth = np.sum(known_depth * w) / np.sum(w)
+        depth = np.maximum((100 - depth) / 100, 0)
+
+        # intensity = np.sum(known_intensity * w) / np.sum(w)
+        # intensity += 0.1
+
+        # new_depth.append(intensity)
+        new_depth.append(depth)
+    # colors = plt.get_cmap('hot')(new_depth)
+    colors = plt.get_cmap('gist_ncar_r')(new_depth)
+    for idx in range(3):
+        img[rays[:, 1], rays[:, 0], 2 - idx] = colors[:, idx] * 255
+
+    # 构建mask
+    mask = np.zeros([img_size[1], img_size[0]], dtype=np.uint8)
+    mask[np.int_(pc[:, 1]), np.int_(pc[:, 0])] = 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 7))
+    mask = cv2.dilate(mask, kernel, iterations=2)
+
+    # 泛洪算法 填补图像中的空洞
+    flood_fill = mask.copy().astype(np.uint8)
+    cv2.floodFill(flood_fill, np.zeros((img_size[1] + 2, img_size[0] + 2), np.uint8), (0, 0), 255)
+    mask = mask | cv2.bitwise_not(flood_fill)
+    # 和mask向掩码
+    img = img * np.expand_dims(mask / 255, -1)
+
+    # # 边缘检测
+    # gray = cv2.cvtColor(img.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+    # edge = cv2.Laplacian(gray, cv2.CV_32F)  # 拉普拉斯边缘检测
+    # edge = np.uint8(np.absolute(edge))  ##对lap去绝对值
+    # # edge = cv2.Canny(gray, 30, 150)
+    #
+    # cv2.imshow('edge', edge)
+    # cv2.waitKey(0)
+    return img
+
+
 def zbuffer_projection(pc, depth, data, img_size):
     """
     serial implement of zbuffer
@@ -109,7 +224,7 @@ def zbuffer_projection(pc, depth, data, img_size):
             # 处理深度
             z_buffer[coord[1], coord[0]] = depth[point_idx]
             # 处理数据
-            # img[coord[1], coord[0], 0] = (pc[point_idx, 3] + 0.1) * 255
+            img[coord[1], coord[0], 0] = (pc[point_idx, 3] + 0.2) * 255
             img[coord[1], coord[0], 1] = (np.maximum(0, MAX_DEPTH - pc[point_idx, 2]) / MAX_DEPTH) ** 1.1 * 255
             img[coord[1], coord[0], 2] = (pc[point_idx, 5] + 126) % 255
             # img[coord[1], coord[0], 2] = (255 - pc[point_idx, 5]) * 2
@@ -155,7 +270,8 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
     pc = np.concatenate([pc[:, :3], intensity], axis=1)
 
     # 上采样点云
-    pc = upsample_ext.upsample(pc, num_threads=NUM_THREADS)
+    pc = np.concatenate([pc, intensity], axis=1)
+    # pc = upsample_ext.upsample(pc, num_threads=NUM_THREADS)
     # pc = pc[np.where(pc[:, -1] == 128)]
 
     # 备份其他特征
@@ -193,7 +309,8 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
         img = np.int_(img * 255)
     elif method == 'interp':
         # 方法3 interp
-        img = interp(pc, img_size)
+        # img = interp(pc, img_size)
+        img = color_map(pc, img_size)
     elif method == 'zbuffer':
         # 方法4 point-zbuffer投影
         img = zbuffer_projection(
@@ -203,6 +320,9 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
             img_size=img_size
         )
         # img[:, :, 2] = zbuffer_projection(pc, img_size)
+    elif method == 'ray':
+        # 方法5 ray tracing插值
+        img = ray_tracing_projection(pc, img_size)
     else:
         img = None
 
@@ -281,23 +401,31 @@ if __name__ == '__main__':
     # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_train'
     # file_list = get_object_file_list(root=INPUT_PATH)
 
-    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/training/{}/'
-    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_train'
-    # file_list = get_tracking_file_list(root=INPUT_PATH)
+    INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/training/{}/'
+    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_train'
+    file_list = get_tracking_file_list(root=INPUT_PATH)
 
     # INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/testing/{}/'
     # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_test'
     # file_list = get_object_file_list(root=INPUT_PATH)
 
-    INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/testing/{}/'
-    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_test'
-    file_list = get_tracking_file_list(root=INPUT_PATH)
+    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/testing/{}/'
+    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_test'
+    # file_list = get_tracking_file_list(root=INPUT_PATH)
 
+    # output_list = os.listdir(OUTPUT_PATH)
+    # file_list = [item for item in file_list if item[2][-10:] not in output_list]
+    # file_list = sorted(file_list)
+    # print(file_list)
+
+    file_list = sorted(file_list)
+
+    # file_list = file_list[7000:]
     # object
     yaw_deg = 0
 
     pool = multiprocessing.Pool(32)
-    for file in sorted(file_list):
+    for file in file_list:
         calib_file_path, bin_file_path, img_path, file_id = file
         pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id, yaw_deg))
         # process_task(calib_file_path, bin_file_path, img_path, file_id)
