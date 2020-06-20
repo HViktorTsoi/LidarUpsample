@@ -21,7 +21,7 @@ py::array_t<float> parallel_add(py::array_t<float> input) {
     return input;
 }
 
-py::array_t<float> upsample(py::array_t<float> input, unsigned num_threads = 4) {
+py::array_t<float> mls_upsample_kernel(py::array_t<float> input, unsigned num_threads = 4) {
     auto ref_input = input.unchecked<2>();
     // 初始化pointcloud 数量是输入的numpy array中的point数量
     PointCloudPtr cloud(new PointCloud(ref_input.shape(0), 1));
@@ -84,6 +84,6 @@ py::array_t<float> upsample(py::array_t<float> input, unsigned num_threads = 4) 
 PYBIND11_MODULE(upsample_ext, m) {
     m.doc() = "MLS upsample.";
     m.def("test", &parallel_add, "numpy add function");
-    m.def("upsample", &upsample, "upsample pointcloud using MLS upsample",
+    m.def("mls_upsample_kernel", &mls_upsample_kernel, "upsample pointcloud using MLS upsample",
           py::arg("input"), py::arg("num_threads") = 4);
 }
