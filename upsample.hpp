@@ -2,6 +2,7 @@
 #include <pcl/surface/impl/mls.hpp>
 #include <pcl/segmentation/impl/sac_segmentation.hpp>
 #include <pcl/filters/extract_indices.h>
+#include <pcl/filters/voxel_grid.h>
 #include <fstream>
 
 typedef pcl::PointCloud<pcl::PointXYZI> PointCloud;
@@ -69,6 +70,52 @@ void save_KITTI_pointcloud(const PointCloudPtr &pc, const std::string &path) {
 
 
 /**
+ * 还原反射率
+ * @param known 已知点云
+ * @param unknown 未知点云
+ */
+void intensity_propagation(const PointCloudPtr &known, PointCloudPtr unknown) {
+    pcl::search::KdTree<XYZI>::Ptr tree(new pcl::search::KdTree<XYZI>);
+    tree->setInputCloud(known);
+
+    std::vector<int> nn_indices;
+    std::vector<float> nn_sqr_dists;
+    const int n_neighbor = 3;
+    for (int i = 0; i < unknown->size(); ++i) {
+        auto &cur_point = unknown->points[i];
+        // 检查unknown中的点是否有inf 如果有的话直接跳过
+        if (!pcl_isfinite(cur_point.x) || !pcl_isfinite(cur_point.y) || !pcl_isfinite(cur_point.z)) {
+//            std::cout << cur_point.x << " " << cur_point.x << " " << cur_point.z << cur_point.intensity << "\n";
+            continue;
+        }
+
+        // 对于每个未知点 查找其邻居点
+        tree->nearestKSearch(cur_point, n_neighbor, nn_indices, nn_sqr_dists);
+//        assert(nn_indices.size() == n_neighbor);
+        if (nn_indices.size() != n_neighbor) {
+            continue;
+        }
+
+        // 用idw的邻居距离权重来计算当前未知点的intensity
+        float sumN = 0, sumD = 0;
+        for (int ni = 0; ni < n_neighbor; ++ni) {
+            // 如果邻居点和未知点重合了 直接就用邻居点的inesity
+            if (nn_sqr_dists[ni] == 0) {
+                sumN = known->points[nn_indices[ni]].intensity;
+                sumD = 1;
+                break;
+            }
+            // 否则用idw公式计算
+            float w = 1 / nn_sqr_dists[ni];
+            sumN += w * known->points[nn_indices[ni]].intensity;
+            sumD += w;
+        }
+        cur_point.intensity = sumN / sumD;
+    }
+}
+
+
+/**
  * mls上采样
  * @param input 输入点云
  * @param radius 每个点云上采样时扩张的半径 单位是m
@@ -99,6 +146,9 @@ mls_upsample(PointCloudPtr &input,
     mls.setUpsamplingRadius(radius);
     mls.setUpsamplingStepSize(step_size);
     mls.process(*mls_points);
+
+    //     还原intensity
+    intensity_propagation(input, mls_points);
     return mls_points;
 }
 
