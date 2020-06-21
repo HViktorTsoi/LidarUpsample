@@ -3,6 +3,11 @@
 import multiprocessing
 import os
 import time
+import sys
+
+if '/opt/ros/kinetic/lib/python2.7/dist-packages' in sys.path:
+    sys.path.remove('/opt/ros/kinetic/lib/python2.7/dist-packages')
+sys.path.append('/home/hviktortsoi/Code/pointcloud_upsample')
 
 import numpy as np
 import array
@@ -17,8 +22,6 @@ from PIL import Image
 from scipy import spatial
 
 import upsample_ext
-
-# import omp
 
 MAX_DEPTH = 60
 NUM_THREADS = 12
@@ -187,36 +190,43 @@ def ray_tracing_interpolation_serial_kernel(pc, dists, indices, K_interp):
 
 def ray_tracing_projection(pc, img_size):
     # 查找多少个邻域点
-    K_search = 8
+    K_search = 7
     # 实际用多少个点插值
-    K_interp = 4
+    K_interp = 3
+
     # 结果图像
     img = np.zeros(img_size[::-1] + (3,))
 
     # 生成2d rays
-    rays = np.array([[row, col] for row in range(img_size[0]) for col in range(img_size[1])])
+    x, y = np.arange(img_size[0]), np.arange(img_size[1])
+    rays = np.transpose([np.tile(x, len(y)), np.repeat(y, len(x))])
 
     # 构造kd tree
     tree = spatial.cKDTree(pc[:, :2])
 
     # 查找近邻点
-    dists, indices = tree.query(rays, k=K_search, n_jobs=6)
-    print(dists, indices)
-    # import pickle
-    # pickle.dump((pc, dists, indices), open('/tmp/inter.pkl', 'wb'))
-    # exit()
+    dists, indices = tree.query(rays, k=K_search, n_jobs=12)
+    #
+    # plt.hist(dists.reshape(-1), bins=100)
+    # plt.show()
 
     # 最近距离优先-近邻深度插值
-    # new_depth = ray_tracing_interpolation_serial_kernel(pc, dists, indices, K_interp)
-    new_depth = upsample_ext.ray_tracing_interpolation_kernel(pc, dists, indices, K_interp, num_threads=12)
-    # new_depth = omp.ray_tracing_interpolation_cython_kernel(pc, dists, indices, K_interp)
+    # interpolation = ray_tracing_interpolation_serial_kernel(pc, dists, indices, K_interp)
+    interpolation = upsample_ext.ray_tracing_interpolation_kernel(pc, dists, indices, K_interp, num_threads=12)
+    # interpolation = omp.ray_tracing_interpolation_cython_kernel(pc, dists, indices, K_interp)
 
-    # 生成结果color可视化
-    new_depth = np.maximum((100 - new_depth) / 100, 0)
-    # colors = plt.get_cmap('hot')(new_depth)
-    colors = plt.get_cmap('gist_ncar_r')(new_depth)
+    # 后处理生成结果 映射为更容易可视化的格式
+    depth = np.maximum((100 - interpolation[:, 0]) / 100, 0)
+    intensity = interpolation[:, 1] + 0.05
+
+    # 生成结果可视化
+
+    colors = plt.get_cmap('gist_ncar_r')(depth)
+    # colors = plt.get_cmap('hot')(intensity)
     for idx in range(3):
         img[rays[:, 1], rays[:, 0], 2 - idx] = colors[:, idx] * 255
+    # img[rays[:, 1], rays[:, 0], 1] = intensity * 255
+    # img[rays[:, 1], rays[:, 0], 2] = depth * 255
 
     # 构建mask
     mask = np.zeros([img_size[1], img_size[0]], dtype=np.uint8)
@@ -264,6 +274,32 @@ def zbuffer_projection(pc, depth, data, img_size):
             # img[coord[1], coord[0], 2] = (255 - pc[point_idx, 5]) * 2
 
     return img
+
+
+def zbuffer_stat(pc, depth, data, img_size):
+    """
+    serial implement of zbuffer
+    :param pc: input pointcloud
+    :param img_size: image size
+    :return: rendered img
+    """
+    z_buffer = np.zeros(img_size[::-1]) + 1e9
+    occulation_map = np.zeros(img_size[::-1] + (3,))
+    proj_coord = np.int_(pc[:, :2])
+    for point_idx, coord in enumerate(proj_coord):
+        # 统计有多少个点占据同一个位置
+        if z_buffer[coord[1], coord[0]] != 1e9:
+            occulation_map[coord[1], coord[0]] += 1
+        # 深度小于当前深度时才进行投影
+        if depth[point_idx] < z_buffer[coord[1], coord[0]]:
+            # 处理深度
+            z_buffer[coord[1], coord[0]] = depth[point_idx]
+    occulation_map[np.where(occulation_map == 1)] = 0
+    occulation_map[np.where(occulation_map > 15)] = 0
+    plt.hist(occulation_map[np.where(occulation_map > 0)].reshape(-1), bins=100)
+    plt.show()
+    occulation_map *= 20
+    return occulation_map
 
 
 def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne'):
@@ -353,7 +389,14 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
             data=pc[:, 2:],
             img_size=img_size
         )
-        # img[:, :, 2] = zbuffer_projection(pc, img_size)
+    elif method == 'zbuffer_stat':
+        # 方法4 point-zbuffer投影
+        img = zbuffer_stat(
+            pc,
+            depth=pc[:, 2],
+            data=pc[:, 2:],
+            img_size=img_size
+        )
     elif method == 'ray':
         # 方法5 ray tracing插值
         img = ray_tracing_projection(pc, img_size)
@@ -419,7 +462,7 @@ def process_task(calib_file_path, bin_file_path, img_path, file_id, yaw_deg=0, m
     if visualize:
         cv2.imshow('', img.astype(np.uint8))
         cv2.waitKey(0)
-        cv2.imwrite('/tmp/{}.png'.format(time.time()), img)
+        cv2.imwrite('/tmp/seq/{}.png'.format(time.time()), img)
     else:
         # print(OUTPUT_PATH, '{}.png'.format(file_id))
         # print(img.shape)
@@ -447,6 +490,11 @@ if __name__ == '__main__':
     # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_test'
     # file_list = get_tracking_file_list(root=INPUT_PATH)
 
+    # # DEBUG
+    # INPUT_PATH = '/media/hvt/95f846d8-d39c-4a04-8b28-030feb1957c6/dataset/KITTI/tracking/training/{}'
+    # OUTPUT_PATH = '/tmp/seq/'
+    # file_list = get_tracking_file_list(root=INPUT_PATH)
+
     # output_list = os.listdir(OUTPUT_PATH)
     # file_list = [item for item in file_list if item[2][-10:] not in output_list]
     # file_list = sorted(file_list)
@@ -461,7 +509,7 @@ if __name__ == '__main__':
     pool = multiprocessing.Pool(32)
     for file in file_list:
         calib_file_path, bin_file_path, img_path, file_id = file
-        pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id, yaw_deg))
+        pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id, yaw_deg, 'ray'))
         # process_task(calib_file_path, bin_file_path, img_path, file_id)
     pool.close()
     pool.join()
