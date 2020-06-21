@@ -83,19 +83,20 @@ py::array_t<float> mls_upsample_kernel(py::array_t<float> input, unsigned num_th
 }
 
 py::array_t<float> ray_tracing_interpolation_kernel(
-        const py::array_t<float>& pc,
-        const py::array_t<float>& dists,
-        const py::array_t<float>& indices,
+        const py::array_t<float> &pc,
+        const py::array_t<float> &dists,
+        const py::array_t<float> &indices,
         int K_interp,
         int num_threads = 4
 ) {
     assert(dists.shape(0) == indices.shape(0));
     // 存储结果的array
     const int num_unknown_points = dists.shape(0), num_neighbors = dists.shape(1);
-    auto new_depth = py::array_t<float>(py::array::ShapeContainer(
-            {(const long) (num_unknown_points)}
+    const int data_field = 2;
+    auto unknown = py::array_t<float>(py::array::ShapeContainer(
+            {(const long) (num_unknown_points), data_field}
     ));
-    float *new_depth_buffer = (float *) new_depth.request().ptr;
+    float *unknown_buffer = (float *) unknown.request().ptr;
 
     // 访问ref
     auto ref_pc = pc.unchecked<2>(), ref_dists = dists.unchecked<2>(), ref_indices = indices.unchecked<2>();
@@ -103,32 +104,38 @@ py::array_t<float> ray_tracing_interpolation_kernel(
     // 遍历所有点插值
 #pragma omp parallel for num_threads(num_threads)
     for (int point_id = 0; point_id < num_unknown_points; ++point_id) {
-        std::vector<float> known_depth;
+        // 找到当前点邻居在2d投影上对应的深度
+        std::vector<float> known_depth, known_intensity;
         for (int i = 0; i < num_neighbors; ++i) {
             known_depth.push_back(
                     ref_pc(ref_indices(point_id, i), 2)
+            );
+            known_intensity.push_back(
+                    ref_pc(ref_indices(point_id, i), 3)
             );
         }
 
         // 对known_depth进行排序
         auto ind = argsort(known_depth);
 
-        // 用idw的邻居距离权重来计算当前未知点的depth
+        // 用idw的邻居距离权重来计算当前未知点的数值
         // 注意这里选择的邻居是深度最浅的几个邻居点
-        float sumN = 0, sumD = 0;
+        float sumN_depth = 0, sumN_intensity = 0, sumD = 0;
         for (int ni = 0; ni < K_interp; ++ni) {
             // 获取深度最浅的邻居点的idx
             int shallow_neighbor_idx = ind[ni];
 
             // 计算idw权重
-            float w = 1 / std::pow(ref_dists(point_id, shallow_neighbor_idx), 2);
-            sumN += w * known_depth[shallow_neighbor_idx];
+            float w = 1 / std::pow(ref_dists(point_id, shallow_neighbor_idx), 4);
+            sumN_depth += w * known_depth[shallow_neighbor_idx];
+            sumN_intensity += w * known_intensity[shallow_neighbor_idx];
             sumD += w;
         }
 
-        new_depth_buffer[point_id] = sumN / sumD;
+        unknown_buffer[point_id * data_field] = sumN_depth / sumD;
+        unknown_buffer[point_id * data_field + 1] = sumN_intensity / sumD;
     }
-    return new_depth;
+    return unknown;
 }
 
 PYBIND11_MODULE(upsample_ext, m) {
