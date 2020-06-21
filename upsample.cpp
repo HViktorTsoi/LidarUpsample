@@ -8,6 +8,7 @@
 #include <pybind11/numpy.h>
 #include <omp.h>
 #include "upsample.hpp"
+#include <algorithm>
 
 namespace py=pybind11;
 
@@ -81,9 +82,64 @@ py::array_t<float> mls_upsample_kernel(py::array_t<float> input, unsigned num_th
     return result;
 }
 
+py::array_t<float> ray_tracing_interpolation_kernel(
+        const py::array_t<float>& pc,
+        const py::array_t<float>& dists,
+        const py::array_t<float>& indices,
+        int K_interp,
+        int num_threads = 4
+) {
+    assert(dists.shape(0) == indices.shape(0));
+    // 存储结果的array
+    const int num_unknown_points = dists.shape(0), num_neighbors = dists.shape(1);
+    auto new_depth = py::array_t<float>(py::array::ShapeContainer(
+            {(const long) (num_unknown_points)}
+    ));
+    float *new_depth_buffer = (float *) new_depth.request().ptr;
+
+    // 访问ref
+    auto ref_pc = pc.unchecked<2>(), ref_dists = dists.unchecked<2>(), ref_indices = indices.unchecked<2>();
+
+    // 遍历所有点插值
+#pragma omp parallel for num_threads(num_threads)
+    for (int point_id = 0; point_id < num_unknown_points; ++point_id) {
+        std::vector<float> known_depth;
+        for (int i = 0; i < num_neighbors; ++i) {
+            known_depth.push_back(
+                    ref_pc(ref_indices(point_id, i), 2)
+            );
+        }
+
+        // 对known_depth进行排序
+        auto ind = argsort(known_depth);
+
+        // 用idw的邻居距离权重来计算当前未知点的depth
+        // 注意这里选择的邻居是深度最浅的几个邻居点
+        float sumN = 0, sumD = 0;
+        for (int ni = 0; ni < K_interp; ++ni) {
+            // 获取深度最浅的邻居点的idx
+            int shallow_neighbor_idx = ind[ni];
+
+            // 计算idw权重
+            float w = 1 / std::pow(ref_dists(point_id, shallow_neighbor_idx), 2);
+            sumN += w * known_depth[shallow_neighbor_idx];
+            sumD += w;
+        }
+
+        new_depth_buffer[point_id] = sumN / sumD;
+    }
+    return new_depth;
+}
+
 PYBIND11_MODULE(upsample_ext, m) {
-    m.doc() = "MLS upsample.";
+    m.doc() = "Pointcloud upsample kernels.";
+
     m.def("test", &parallel_add, "numpy add function");
+
     m.def("mls_upsample_kernel", &mls_upsample_kernel, "upsample pointcloud using MLS upsample",
           py::arg("input"), py::arg("num_threads") = 4);
+
+    m.def("ray_tracing_interpolation_kernel", &ray_tracing_interpolation_kernel,
+          py::arg("pc"), py::arg("dists"), py::arg("indices"), py::arg("K_interp"), py::arg("num_threads") = 4,
+          "ray-tracing interpolation");
 }

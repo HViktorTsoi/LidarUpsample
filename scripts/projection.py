@@ -16,10 +16,12 @@ import cv2
 from PIL import Image
 from scipy import spatial
 
-# import upsample_ext
+import upsample_ext
+
+# import omp
 
 MAX_DEPTH = 60
-NUM_THREADS = 72
+NUM_THREADS = 12
 
 
 def interp(pc, img_size):
@@ -127,26 +129,9 @@ def color_map(pc, img_size):
     return img
 
 
-def ray_tracing_projection(pc, img_size):
-    # 查找多少个邻域点
-    K_search = 8
-    # 实际用多少个点插值
-    K_interp = 4
-    # 结果图像
-    img = np.zeros(img_size[::-1] + (3,))
-
-    # 生成2d rays
-    rays = np.array([[row, col] for row in range(img_size[0]) for col in range(img_size[1])])
-
-    # 构造kd tree
-    tree = spatial.cKDTree(pc[:, :2])
-
-    # 查找近邻点
-    dists, indices = tree.query(rays, k=K_search, )
-    print(dists, indices)
-
-    new_depth = []
-    for (x, y), dist, indice in zip(rays, dists, indices):
+def ray_tracing_interpolation_serial_kernel(pc, dists, indices, K_interp):
+    new_depth = np.empty(dists.shape[0])
+    for point_id, (dist, indice) in enumerate(zip(dists, indices)):
         # 如果有太多inf 直接抛弃 不参与计算
         if len(np.where(dist == np.inf)[0]) > 0:
             new_depth.append(100)
@@ -163,6 +148,24 @@ def ray_tracing_projection(pc, img_size):
         # depth = abs(known_depth[ind][-K_interp:].mean() - known_depth.mean())
         # depth = abs(known_depth.mean())
         # depth = np.maximum((100 - depth) / 100, 0)
+        # ind = np.argsort(known_depth)
+        # known_depth = known_depth[ind]
+        # depth_diff = known_depth[1:] - known_depth[:-1]
+        # depth = np.argmax(depth_diff) * 10
+        # depth = np.maximum((100 - depth) / 100, 0)
+        #
+        # # 仅使用深度最浅的几个点
+        # ind = np.argsort(known_depth)
+        # pivot = np.argmax(known_depth[ind][1:] - known_depth[ind][:-1])
+        # if pivot > K_search // 4:
+        #     # 后边方差大 则深度小的为多数
+        #     known_depth = known_depth[ind][:pivot]
+        #     dist = dist[ind][:pivot]
+        #     known_intensity = known_intensity[ind][:pivot]
+        # else:
+        #     known_depth = known_depth[ind][-pivot:]
+        #     dist = dist[ind][-pivot:]
+        #     known_intensity = known_intensity[ind][-pivot:]
 
         # 仅使用深度最浅的几个点
         ind = np.argpartition(known_depth, K_interp)
@@ -172,13 +175,44 @@ def ray_tracing_projection(pc, img_size):
 
         w = 1 / dist ** 2
         depth = np.sum(known_depth * w) / np.sum(w)
-        depth = np.maximum((100 - depth) / 100, 0)
 
         # intensity = np.sum(known_intensity * w) / np.sum(w)
         # intensity += 0.1
 
         # new_depth.append(intensity)
-        new_depth.append(depth)
+        new_depth[point_id] = depth
+
+    return new_depth
+
+
+def ray_tracing_projection(pc, img_size):
+    # 查找多少个邻域点
+    K_search = 8
+    # 实际用多少个点插值
+    K_interp = 4
+    # 结果图像
+    img = np.zeros(img_size[::-1] + (3,))
+
+    # 生成2d rays
+    rays = np.array([[row, col] for row in range(img_size[0]) for col in range(img_size[1])])
+
+    # 构造kd tree
+    tree = spatial.cKDTree(pc[:, :2])
+
+    # 查找近邻点
+    dists, indices = tree.query(rays, k=K_search, n_jobs=6)
+    print(dists, indices)
+    # import pickle
+    # pickle.dump((pc, dists, indices), open('/tmp/inter.pkl', 'wb'))
+    # exit()
+
+    # 最近距离优先-近邻深度插值
+    # new_depth = ray_tracing_interpolation_serial_kernel(pc, dists, indices, K_interp)
+    new_depth = upsample_ext.ray_tracing_interpolation_kernel(pc, dists, indices, K_interp, num_threads=12)
+    # new_depth = omp.ray_tracing_interpolation_cython_kernel(pc, dists, indices, K_interp)
+
+    # 生成结果color可视化
+    new_depth = np.maximum((100 - new_depth) / 100, 0)
     # colors = plt.get_cmap('hot')(new_depth)
     colors = plt.get_cmap('gist_ncar_r')(new_depth)
     for idx in range(3):
@@ -271,7 +305,7 @@ def project_lidar_to_image(pc, img_size, calib_file, yaw_deg, method='velodyne')
 
     # 上采样点云
     pc = np.concatenate([pc, intensity], axis=1)
-    # pc = upsample_ext.upsample(pc, num_threads=NUM_THREADS)
+    # pc = upsample_ext.mls_upsample_kernel(pc, num_threads=NUM_THREADS)
     # pc = pc[np.where(pc[:, -1] == 128)]
 
     # 备份其他特征
