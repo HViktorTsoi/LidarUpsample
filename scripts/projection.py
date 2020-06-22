@@ -51,6 +51,12 @@ def interp(pc, img_size):
     return img
 
 
+def load_KITTI_semantic(label_path):
+    label = np.fromfile(label_path, dtype=np.uint16)
+    label = label.reshape(-1, 2)
+    return label
+
+
 def load_pc(bin_file_path):
     """
     load pointcloud file (velodyne format)
@@ -73,6 +79,7 @@ def load_calib(calib_file_path):
     calib_file = open(calib_file_path, 'r').readlines()
     calib_file = [line
                       .replace('Tr_velo_to_cam', 'Tr_velo_cam')
+                      .replace('Tr:', 'Tr_velo_cam:')
                       .replace('R0_rect', 'R_rect')
                       .replace('\n', '')
                       .replace(':', '')
@@ -93,9 +100,12 @@ def parse_calib_file(calib_file):
     Tr_velo_cam = np.array(calib_file['Tr_velo_cam']).reshape(3, 4)
     Tr_velo_cam = np.concatenate([Tr_velo_cam, [[0, 0, 0, 1]]], axis=0)
     # 矫正矩阵
-    R_rect = np.array(calib_file['R_rect']).reshape(3, 3)
-    R_rect = np.pad(R_rect, [[0, 1], [0, 1]], mode='constant')
-    R_rect[-1, -1] = 1
+    if 'R_rect' in calib_file:
+        R_rect = np.array(calib_file['R_rect']).reshape(3, 3)
+        R_rect = np.pad(R_rect, [[0, 1], [0, 1]], mode='constant')
+        R_rect[-1, -1] = 1
+    else:
+        R_rect = np.eye(4)
     # 内参矩阵
     P2 = np.array(calib_file['P2']).reshape(3, 4)
 
@@ -221,8 +231,8 @@ def ray_tracing_projection(pc, img_size):
 
     # 生成结果可视化
 
-    colors = plt.get_cmap('gist_ncar_r')(depth)
-    # colors = plt.get_cmap('hot')(intensity)
+    # colors = plt.get_cmap('gist_ncar_r')(depth)
+    colors = plt.get_cmap('hot')(intensity)
     for idx in range(3):
         img[rays[:, 1], rays[:, 0], 2 - idx] = colors[:, idx] * 255
     # img[rays[:, 1], rays[:, 0], 1] = intensity * 255
@@ -295,7 +305,7 @@ def zbuffer_stat(pc, depth, data, img_size):
             # 处理深度
             z_buffer[coord[1], coord[0]] = depth[point_idx]
     occulation_map[np.where(occulation_map == 1)] = 0
-    occulation_map[np.where(occulation_map > 15)] = 0
+    # occulation_map[np.where(occulation_map > 15)] = 0
     plt.hist(occulation_map[np.where(occulation_map > 0)].reshape(-1), bins=100)
     plt.show()
     occulation_map *= 20
@@ -423,6 +433,27 @@ def get_object_file_list(root):
     return file_list
 
 
+def get_odometry_file_list(root):
+    """
+    获取kitti tracking目录格式下的所有文件
+    :param root:
+    :return:
+    """
+    # 提取tracking中的所有文件
+    pc_list = ['{}/{{}}/{}'.format(path, file) for path in sorted(os.listdir(root.format(''))) if path in ['01']
+               for file in sorted(os.listdir(os.path.join(root.format(''), path, 'velodyne')))]
+
+    file_list = []
+    for pc_file in pc_list:
+        file_list.append((
+            os.path.join(root.format(''), pc_file[:2], 'calib.txt'),
+            os.path.join(root.format(''), pc_file.format('velodyne')),
+            os.path.join(root.format(''), pc_file.format('image_2')[:-4] + '.png'),
+            pc_file[:-4].format('').replace('/', '_')  # 文件id去掉目录分割符
+        ))
+    return file_list
+
+
 def get_tracking_file_list(root):
     """
     获取kitti tracking目录格式下的所有文件
@@ -478,9 +509,9 @@ if __name__ == '__main__':
     # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_train'
     # file_list = get_object_file_list(root=INPUT_PATH)
 
-    INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/training/{}/'
-    OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_train'
-    file_list = get_tracking_file_list(root=INPUT_PATH)
+    # INPUT_PATH = '/home/bdbc201/dataset/KITTI/tracking/training/{}/'
+    # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/tracking_train'
+    # file_list = get_tracking_file_list(root=INPUT_PATH)
 
     # INPUT_PATH = '/home/bdbc201/dataset/KITTI/object/testing/{}/'
     # OUTPUT_PATH = '/home/bdbc201/dataset/cgan/mls/object_test'
@@ -495,6 +526,11 @@ if __name__ == '__main__':
     # OUTPUT_PATH = '/tmp/seq/'
     # file_list = get_tracking_file_list(root=INPUT_PATH)
 
+    # DEBUG
+    INPUT_PATH = '/media/hvt/95f846d8-d39c-4a04-8b28-030feb1957c6/dataset/KITTI/odometry/sequences/{}'
+    OUTPUT_PATH = '/tmp/seq/'
+    file_list = get_odometry_file_list(root=INPUT_PATH)
+
     # output_list = os.listdir(OUTPUT_PATH)
     # file_list = [item for item in file_list if item[2][-10:] not in output_list]
     # file_list = sorted(file_list)
@@ -506,7 +542,7 @@ if __name__ == '__main__':
     # object
     yaw_deg = 0
 
-    pool = multiprocessing.Pool(32)
+    pool = multiprocessing.Pool(12)
     for file in file_list:
         calib_file_path, bin_file_path, img_path, file_id = file
         pool.apply_async(process_task, args=(calib_file_path, bin_file_path, img_path, file_id, yaw_deg, 'ray'))
