@@ -35,6 +35,17 @@ typename pcl::PointCloud<TPointType>::Ptr vector_to_pointcloud(std::vector<std::
 }
 
 /**
+ * visulize pointcloud
+ * @param cloud
+ */
+void visualize(PointCloudPtr cloud) {
+    // vis
+    pcl::visualization::CloudViewer viewer("Demo viewer");
+    viewer.showCloud(cloud);
+    while (!viewer.wasStopped()) {}
+}
+
+/**
  * 分割出视野ROI
  * @param input
  * @param fov
@@ -64,12 +75,6 @@ PointCloudPtr crop_ROI(const PointCloudPtr &input, float fov, float forward_dist
     return output;
 }
 
-void visualize(PointCloudPtr cloud) {
-    // vis
-    pcl::visualization::CloudViewer viewer("Demo viewer");
-    viewer.showCloud(cloud);
-    while (!viewer.wasStopped()) {}
-}
 
 PointCloudPtr range_partition(PointCloudPtr input, int start, int end) {
     // 设置比较条件
@@ -187,15 +192,16 @@ void mesh_visualize(const PointCloudPtr &input) {
 
 }
 
-PointCloudPtr test_lidar_upsample(PointCloudPtr cloud,
-                                  float radius, float step, float weight, float max_up_radius, int order = 3,
-                                  float voxel_leaf_size = 0.03) {
+PointCloudPtr ada_mls_upsample(PointCloudPtr cloud,
+                               float radius, float step, float weight, float max_up_radius, int order = 3,
+                               float voxel_leaf_size = 0.03, bool remove_vertical = false) {
     PointCloudPtr mls_points(new PointCloud), mls_points_voxel(new PointCloud);
 
     MovingLeastSquaresLiDAR<XYZI, XYZI> mls;
     pcl::search::KdTree<XYZI>::Ptr tree(new pcl::search::KdTree<XYZI>);
     mls.setInputCloud(cloud);
     mls.setPolynomialOrder(order);
+    mls.setComputeNormals(true);
     mls.setSearchRadius(0.3);
     mls.setSearchMethod(tree);
 
@@ -204,19 +210,24 @@ PointCloudPtr test_lidar_upsample(PointCloudPtr cloud,
     mls.setUpsamplingStepSize(step);
     mls.setRadiusWeight(weight);
     mls.setRadiusMax(max_up_radius);
+    mls.setRemoveVerticalObject(remove_vertical);
 
     mls.process(*mls_points);
 
     std::cout << mls_points->size() << std::endl;
 
-//    // 去除噪声
-//    mls_points = noise_remove(mls_points);
-    mls_points = crop_ROI(mls_points, 3.14159 / 4, 200);
+//    // 去除超出roi之外的点
+//    mls_points = crop_ROI(mls_points, 3.14159 / 4, 200);
+
     // voxel 平滑
     pcl::VoxelGrid<XYZI> vg;
     vg.setInputCloud(mls_points);
     vg.setLeafSize(voxel_leaf_size, voxel_leaf_size, voxel_leaf_size);
     vg.filter(*mls_points_voxel);
+    std::cout << mls_points_voxel->size() << std::endl;
+
+//     还原intensity
+    intensity_propagation(cloud, mls_points_voxel);
 
 //    visualize(mls_points);
 //    spatial_visualize(mls_points);
@@ -242,13 +253,17 @@ int main(int argc, char *argv[]) {
     ground = crop_ROI(ground, 3.14159 / 4, 200);
     std::cout << landscape->size() << std::endl;
     std::cout << ground->size() << std::endl;
-//    visualize(landscape);
+//    visualize(cloud);
 
-    auto landscape_upsampled = test_lidar_upsample(landscape, 0.09, 0.03, 1, 1, 3, 0.02);
-//    auto ground_upsampled = test_lidar_upsample(ground, 0.4, 0.2, 2, 5,3);
-//    auto landscape_upsampled = test_lidar_upsample(landscape, 0.1, 0.03, 3, 3, 5, 0.05);
-//    auto ground_upsampled = test_lidar_upsample(ground, 0.4, 0.2, 2, 5, 3, 0.05);
-    auto ground_upsampled = ground;
+    auto landscape_upsampled = mls_upsample(landscape);
+//    auto ground_upsampled = mls_upsample(ground, 0.4, 0.2, 1.0, 5, 3, 0.05, true);
+
+//    auto landscape_upsampled = ada_mls_upsample(landscape, 0.09, 0.03, 1.0, 1, 5, 0.03);
+//    auto ground_upsampled = ada_mls_upsample(ground, 0.4, 0.2, 1.0, 5, 3, 0.05, true);
+
+//    auto landscape_upsampled = ada_mls_upsample(landscape, 0.1, 0.03, 1.5, 3, 5, 0.05);
+//    auto ground_upsampled = ada_mls_upsample(ground, 0.6, 0.2, 4, 5, 3, 0.05, true);
+//    auto ground_upsampled = ground;
 
 //    // reconstruct ground
 //    auto ground = ground_generation(segmentation.ground, segmentation.coef, 50, 0.1);
@@ -262,7 +277,7 @@ int main(int argc, char *argv[]) {
 
     visualize(landscape_upsampled);
 
-//    save_KITTI_pointcloud(landscape_upsampled, std::string(argv[2]));
+    save_KITTI_pointcloud(landscape_upsampled, std::string(argv[2]));
 
     return 0;
 }

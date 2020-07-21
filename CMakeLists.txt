@@ -1,16 +1,16 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.5)
 project(pointcloud_upsample)
 
 set(CMAKE_CXX_STANDARD 14)
 
-
-# python and pybind11
-set(PYTHON_INCLUDE_DIRS "${PYTHON_ROOT}/include/;${PYTHON_ROOT}/include/python${PYTHON_VERSION}m")
-set(PYTHON_LIBARIES "${PYTHON_ROOT}/lib/")
-
-message("PYTHON INCLUDE DIRS: " ${PYTHON_INCLUDE_DIRS})
-message("PYTHON LIBRARY: " ${PYTHON_LIBARIES})
-include_directories(${PYTHON_INCLUDE_DIRS})
+add_subdirectory(pybind11)
+## python and pybind11
+#set(PYTHON_INCLUDE_DIRS "${PYTHON_ROOT}/include/;${PYTHON_ROOT}/include/python${PYTHON_VERSION}m")
+#set(PYTHON_LIBARIES "${PYTHON_ROOT}/lib/")
+#
+#message("PYTHON INCLUDE DIRS: " ${PYTHON_INCLUDE_DIRS})
+#message("PYTHON LIBRARY: " ${PYTHON_LIBARIES})
+#include_directories(${PYTHON_INCLUDE_DIRS})
 
 ## pybind
 #set(pybind11_DIR "/home/hviktortsoi/miniconda3/share/cmake/pybind11")
@@ -35,12 +35,16 @@ if (OPENMP_FOUND)
 endif ()
 
 # main
-add_executable(pointcloud_upsample main.cpp upsample.hpp)
+add_executable(pointcloud_upsample src/main.cpp src/upsample.hpp src/mls_lidar.hpp)
 target_link_libraries(pointcloud_upsample ${PCL_LIBRARIES})
 
 ## compile mls upsample library
-
-add_library(upsample_ext SHARED upsample.cpp upsample.hpp)
+pybind11_add_module(upsample_ext src/upsample.cpp src/upsample.hpp)
 set_target_properties(upsample_ext PROPERTIES PREFIX "")
-#target_link_libraries(upsample_ext pybind11::module ${PCL_LIBRARIES})
-target_link_libraries(upsample_ext ${PYTHON_LIBARIES} ${PCL_LIBRARIES})
+set_target_properties(upsample_ext PROPERTIES SUFFIX ".so")
+target_link_libraries(upsample_ext PRIVATE ${PYTHON_LIBARIES} ${PCL_LIBRARIES})
+#
+#add_library(upsample_ext SHARED upsample.cpp upsample.hpp)
+#set_target_properties(upsample_ext PROPERTIES PREFIX "")
+##target_link_libraries(upsample_ext pybind11::module ${PCL_LIBRARIES})
+#target_link_libraries(upsample_ext ${PYTHON_LIBARIES} ${PCL_LIBRARIES})
